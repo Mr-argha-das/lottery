@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -12,8 +11,9 @@ const gold = Color(0xFFFFD979),
 
 class ApiClient {
   ApiClient({String? base})
-      : base =
-            base ?? (kIsWeb ? 'http://localhost:8000' : 'http://10.0.2.2:8000');
+      : base = base ??
+            const String.fromEnvironment('API_BASE_URL',
+                defaultValue: 'http://13.232.7.0:8004');
   final String base;
   final storage = const FlutterSecureStorage();
   Future<Map<String, dynamic>> get(String path) async {

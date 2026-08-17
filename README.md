@@ -39,6 +39,13 @@ flutter pub get
 flutter run
 ```
 
+The Flutter client defaults to `http://13.232.7.0:8004`. Override it without
+editing code when needed:
+
+```bash
+flutter run --dart-define=API_BASE_URL=http://127.0.0.1:8000
+```
+
 Android emulator uses `http://10.0.2.2:8000`; for iOS simulator/device, update `ApiClient.base`
 in `flutter_app/lib/main.dart`. Production builds must use HTTPS and platform deep-link setup.
 
