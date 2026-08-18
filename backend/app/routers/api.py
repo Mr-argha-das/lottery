@@ -47,6 +47,11 @@ def tickets(user=Depends(current_user),db:Session=Depends(get_db)): return {"suc
 def wallet(user=Depends(current_user),db:Session=Depends(get_db)): return {"success":True,"data":obj(db.get(Wallet,user.id))}
 @router.get("/wallet/transactions")
 def wallet_tx(user=Depends(current_user),db:Session=Depends(get_db)): return {"success":True,"data":[obj(x) for x in db.scalars(select(WalletTransaction).where(WalletTransaction.user_id==user.id).order_by(WalletTransaction.created_at.desc()))]}
+@router.get("/app-config")
+def app_config(user=Depends(current_user),db:Session=Depends(get_db)):
+    keys=("wallet_topup_deep_link","terms_text","privacy_text","support_contact")
+    values={key:(db.get(AppSetting,key).value if db.get(AppSetting,key) else "") for key in keys}
+    return {"success":True,"data":values}
 @router.get("/referrals")
 def referrals(user=Depends(current_user),db:Session=Depends(get_db)):
     rows=db.scalars(select(Referral).where(Referral.referrer_id==user.id)).all(); return {"success":True,"data":{"code":user.referral_code,"total":len(rows),"successful":sum(r.rewarded for r in rows)}}

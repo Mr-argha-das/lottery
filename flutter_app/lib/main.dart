@@ -3,17 +3,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(const DhanLaxmiApp());
 const gold = Color(0xFFFFD979),
     violet = Color(0xFF8B5CF6),
     ink = Color(0xFF090A12);
+const defaultWalletTopUpLink =
+    'upi://pay?pa=9509961818%40ybl&pn=DhanLaxmi&cu=INR&tn=Wallet%20top-up';
 
 class ApiClient {
   ApiClient({String? base})
       : base = base ??
             const String.fromEnvironment('API_BASE_URL',
-                defaultValue: 'http://13.232.7.0:8004');
+                defaultValue: 'https://overhaul-oaf-silk.ngrok-free.dev');
   final String base;
   final storage = const FlutterSecureStorage();
   Future<Map<String, dynamic>> get(String path) async {
@@ -30,6 +34,22 @@ class ApiClient {
       String path, Map<String, dynamic> body) async {
     final r = await http.post(Uri.parse('$base$path'),
         headers: {'Content-Type': 'application/json'}, body: jsonEncode(body));
+    final data = jsonDecode(r.body) as Map<String, dynamic>;
+    if (r.statusCode >= 400) {
+      throw Exception(data['detail'] ?? 'Request failed');
+    }
+    return data;
+  }
+
+  Future<Map<String, dynamic>> put(
+      String path, Map<String, dynamic> body) async {
+    final t = await storage.read(key: 'access');
+    final r = await http.put(Uri.parse('$base$path'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (t != null) 'Authorization': 'Bearer $t'
+        },
+        body: jsonEncode(body));
     final data = jsonDecode(r.body) as Map<String, dynamic>;
     if (r.statusCode >= 400) {
       throw Exception(data['detail'] ?? 'Request failed');
@@ -382,6 +402,7 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   List<Lottery> lotteries = samples;
+  bool hasUnreadNotifications = false;
   @override
   void initState() {
     super.initState();
@@ -390,10 +411,15 @@ class _HomeState extends State<Home> {
 
   Future<void> load() async {
     try {
-      final result = await ApiClient().get('/api/lotteries');
+      final api = ApiClient();
+      final result = await api.get('/api/lotteries');
       final live =
           (result['data'] as List).map((x) => Lottery.fromJson(x)).toList();
       if (mounted && live.isNotEmpty) setState(() => lotteries = live);
+      final notifications = await api.get('/api/notifications');
+      final unread = (notifications['data'] as List)
+          .any((item) => item['is_read'] != true);
+      if (mounted) setState(() => hasUnreadNotifications = unread);
     } catch (_) {}
   }
 
@@ -424,17 +450,28 @@ class _HomeState extends State<Home> {
                                   fontSize: 20, fontWeight: FontWeight.w800))
                         ])
                   ]),
-                  Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: .06),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: Colors.white10)),
-                      child: const Badge(
-                          smallSize: 7,
-                          backgroundColor: gold,
-                          child: Icon(Icons.notifications_none_rounded,
-                              color: Colors.white)))
+                  InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () async {
+                        await Navigator.push(
+                            c,
+                            MaterialPageRoute(
+                                builder: (_) => const NotificationsPage()));
+                        load();
+                      },
+                      child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: .06),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: Colors.white10)),
+                          child: Badge(
+                              isLabelVisible: hasUnreadNotifications,
+                              smallSize: 7,
+                              backgroundColor: gold,
+                              child: const Icon(
+                                  Icons.notifications_none_rounded,
+                                  color: Colors.white))))
                 ]))),
         SliverToBoxAdapter(child: HeroBanner(lottery: lotteries.first)),
         SliverPadding(
@@ -891,49 +928,233 @@ class _MyTicketsPageState extends State<MyTicketsPage> {
           ])));
 }
 
-class WalletPage extends StatelessWidget {
+class NotificationsPage extends StatefulWidget {
+  const NotificationsPage({super.key});
+  @override
+  State<NotificationsPage> createState() => _NotificationsPageState();
+}
+
+class _NotificationsPageState extends State<NotificationsPage> {
+  late Future<Map<String, dynamic>> future;
+  @override
+  void initState() {
+    super.initState();
+    future = ApiClient().get('/api/notifications');
+  }
+
+  Future<void> _refresh() async {
+    setState(() => future = ApiClient().get('/api/notifications'));
+    await future;
+  }
+
+  Future<void> _markRead(Map<String, dynamic> item) async {
+    if (item['is_read'] != true) {
+      await ApiClient().put('/api/notifications/${item['id']}/read', {});
+      await _refresh();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(title: const Text('Notifications')),
+      body: FutureBuilder<Map<String, dynamic>>(
+          future: future,
+          builder: (_, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return EmptyPage(
+                  icon: Icons.cloud_off_outlined,
+                  title: 'Unable to load notifications',
+                  text: snapshot.error
+                      .toString()
+                      .replaceFirst('Exception: ', ''));
+            }
+            final rows = (snapshot.data?['data'] as List?) ?? [];
+            if (rows.isEmpty) {
+              return const EmptyPage(
+                  icon: Icons.notifications_none_rounded,
+                  title: 'No notifications yet',
+                  text:
+                      'Ticket confirmations and draw updates will appear here.');
+            }
+            return RefreshIndicator(
+                onRefresh: _refresh,
+                child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: rows.length,
+                    itemBuilder: (_, i) {
+                      final item = rows[i] as Map<String, dynamic>;
+                      final unread = item['is_read'] != true;
+                      return Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          child: ListTile(
+                              onTap: () => _markRead(item),
+                              contentPadding: const EdgeInsets.all(14),
+                              leading: CircleAvatar(
+                                  backgroundColor:
+                                      (unread ? gold : Colors.white)
+                                          .withValues(alpha: .12),
+                                  child: Icon(Icons.notifications_rounded,
+                                      color: unread ? gold : Colors.white54)),
+                              title: Text(item['title'] ?? 'Notification',
+                                  style: TextStyle(
+                                      fontWeight: unread
+                                          ? FontWeight.w900
+                                          : FontWeight.w600)),
+                              subtitle: Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(item['body'] ?? '',
+                                      style: const TextStyle(
+                                          color: Colors.white60))),
+                              trailing: unread
+                                  ? const CircleAvatar(
+                                      radius: 4, backgroundColor: gold)
+                                  : const Icon(Icons.done,
+                                      size: 18, color: Colors.white30)));
+                    }));
+          }));
+}
+
+class WalletPage extends StatefulWidget {
   const WalletPage({super.key});
   @override
+  State<WalletPage> createState() => _WalletPageState();
+}
+
+class _WalletPageState extends State<WalletPage> {
+  late Future<List<Map<String, dynamic>>> future;
+  @override
+  void initState() {
+    super.initState();
+    future = _load();
+  }
+
+  Future<List<Map<String, dynamic>>> _load() async {
+    final api = ApiClient();
+    final wallet = await api.get('/api/wallet');
+    final transactions = await api.get('/api/wallet/transactions');
+    Map<String, dynamic> config;
+    try {
+      config = await api.get('/api/app-config');
+    } catch (_) {
+      config = {
+        'success': true,
+        'data': {'wallet_topup_deep_link': defaultWalletTopUpLink}
+      };
+    }
+    return [wallet, transactions, config];
+  }
+
+  Future<void> _topUp(String link) async {
+    if (link.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Wallet top-up is not configured yet.')));
+      return;
+    }
+    final uri = Uri.tryParse(link.trim());
+    if (uri == null ||
+        !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('No payment app could open this link.')));
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext c) => SafeArea(
-      child: Padding(
-          padding: const EdgeInsets.all(20),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('Wallet',
-                style: TextStyle(fontSize: 29, fontWeight: FontWeight.w900)),
-            const SizedBox(height: 25),
-            Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(26),
-                decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                        colors: [Color(0xFF5D3DB7), Color(0xFF29204E)]),
-                    borderRadius: BorderRadius.circular(24)),
-                child: const Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('AVAILABLE CREDIT',
-                          style: TextStyle(
-                              color: Colors.white60,
-                              letterSpacing: 1.5,
-                              fontSize: 11)),
-                      SizedBox(height: 8),
-                      Text('₹0',
-                          style: TextStyle(
-                              fontSize: 42, fontWeight: FontWeight.w900)),
-                      SizedBox(height: 24),
-                      Text(
-                          'Referral credits can only be used under applicable lottery rules.',
-                          style: TextStyle(color: Colors.white60))
-                    ])),
-            const SizedBox(height: 26),
-            const Text('Transactions',
-                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 19)),
-            const Expanded(
-                child: Center(
-                    child: Text('No transactions yet',
-                        style: TextStyle(color: Colors.white38))))
-          ])));
+      child: FutureBuilder<List<Map<String, dynamic>>>(
+          future: future,
+          builder: (_, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final wallet =
+                snapshot.data?[0]['data'] as Map<String, dynamic>? ?? {};
+            final transactions = snapshot.data?[1]['data'] as List? ?? [];
+            final config =
+                snapshot.data?[2]['data'] as Map<String, dynamic>? ?? {};
+            final balance =
+                (wallet['available_balance'] as num?)?.toStringAsFixed(0) ??
+                    '0';
+            return RefreshIndicator(
+                onRefresh: () async => setState(() => future = _load()),
+                child: ListView(padding: const EdgeInsets.all(20), children: [
+                  const Text('Wallet',
+                      style:
+                          TextStyle(fontSize: 29, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 25),
+                  Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(26),
+                      decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                              colors: [Color(0xFF5D3DB7), Color(0xFF29204E)]),
+                          borderRadius: BorderRadius.circular(24)),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('AVAILABLE CREDIT',
+                                style: TextStyle(
+                                    color: Colors.white60,
+                                    letterSpacing: 1.5,
+                                    fontSize: 11)),
+                            const SizedBox(height: 8),
+                            Text('₹$balance',
+                                style: const TextStyle(
+                                    fontSize: 42, fontWeight: FontWeight.w900)),
+                            const SizedBox(height: 20),
+                            SizedBox(
+                                width: double.infinity,
+                                child: FilledButton.icon(
+                                    onPressed: () => _topUp(
+                                        config['wallet_topup_deep_link'] ??
+                                            defaultWalletTopUpLink),
+                                    style: FilledButton.styleFrom(
+                                        backgroundColor: gold,
+                                        foregroundColor: ink),
+                                    icon: const Icon(Icons.add_card_rounded),
+                                    label: const Text('Top up wallet',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.w900)))),
+                            const SizedBox(height: 16),
+                            const Text(
+                                'Referral credits can only be used under applicable lottery rules.',
+                                style: TextStyle(color: Colors.white60))
+                          ])),
+                  const SizedBox(height: 26),
+                  const Text('Transactions',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w800, fontSize: 19)),
+                  const SizedBox(height: 12),
+                  if (transactions.isEmpty)
+                    const Padding(
+                        padding: EdgeInsets.only(top: 90),
+                        child: Center(
+                            child: Text('No transactions yet',
+                                style: TextStyle(color: Colors.white38))))
+                  else
+                    ...transactions.map((x) => ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: CircleAvatar(
+                            backgroundColor: gold.withValues(alpha: .12),
+                            child: Icon(
+                                (x['amount'] as num) >= 0
+                                    ? Icons.south_west_rounded
+                                    : Icons.north_east_rounded,
+                                color: gold)),
+                        title: Text(x['description'] ??
+                            x['type'] ??
+                            'Wallet transaction'),
+                        subtitle: Text(
+                            x['created_at']?.toString().split('T').first ?? ''),
+                        trailing: Text('₹${x['amount']}',
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w800))))
+                ]));
+          }));
 }
 
 class ProfilePage extends StatelessWidget {
@@ -954,13 +1175,21 @@ class ProfilePage extends StatelessWidget {
                     child: Icon(Icons.person, size: 42, color: gold))),
             const SizedBox(height: 20),
             for (final x in [
-              ('Personal details', Icons.person_outline),
-              ('UPI & payment', Icons.account_balance_outlined),
-              ('Delivery address', Icons.local_shipping_outlined),
-              ('Invite friends', Icons.group_add_outlined),
-              ('Terms & privacy', Icons.shield_outlined)
+              ('Personal details', Icons.person_outline, 'personal'),
+              ('UPI & payment', Icons.account_balance_outlined, 'upi'),
+              ('Delivery address', Icons.local_shipping_outlined, 'address'),
+              ('Invite friends', Icons.group_add_outlined, 'invite'),
+              ('Terms & privacy', Icons.shield_outlined, 'legal')
             ])
               ListTile(
+                  onTap: () => Navigator.push(
+                      c,
+                      MaterialPageRoute(
+                          builder: (_) => x.$3 == 'invite'
+                              ? const InviteFriendsPage()
+                              : x.$3 == 'legal'
+                                  ? const TermsPrivacyPage()
+                                  : ProfileEditPage(section: x.$3))),
                   leading: Icon(x.$2, color: Colors.white60),
                   title: Text(x.$1),
                   trailing:
@@ -979,6 +1208,240 @@ class ProfilePage extends StatelessWidget {
                 title: const Text('Logout',
                     style: TextStyle(color: Colors.redAccent)))
           ])));
+}
+
+class ProfileEditPage extends StatefulWidget {
+  const ProfileEditPage({super.key, required this.section});
+  final String section;
+  @override
+  State<ProfileEditPage> createState() => _ProfileEditPageState();
+}
+
+class _ProfileEditPageState extends State<ProfileEditPage> {
+  final fields = <String, TextEditingController>{};
+  bool loading = true, saving = false;
+  String? error;
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    for (final c in fields.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  List<(String, String, IconData)> get specs => widget.section == 'personal'
+      ? [
+          ('full_name', 'Full name', Icons.person_outline),
+          ('mobile', 'Mobile number', Icons.phone_outlined)
+        ]
+      : widget.section == 'upi'
+          ? [('upi_id', 'Your UPI ID', Icons.account_balance_outlined)]
+          : [
+              ('address', 'Address', Icons.home_outlined),
+              ('city', 'City', Icons.location_city_outlined),
+              ('state', 'State', Icons.map_outlined),
+              ('pincode', 'PIN code', Icons.pin_drop_outlined)
+            ];
+  String get title => widget.section == 'personal'
+      ? 'Personal details'
+      : widget.section == 'upi'
+          ? 'UPI & payment'
+          : 'Delivery address';
+
+  Future<void> _load() async {
+    try {
+      final data = (await ApiClient().get('/api/users/me'))['data'];
+      for (final spec in specs) {
+        fields[spec.$1] = TextEditingController(text: '${data[spec.$1] ?? ''}');
+      }
+    } catch (e) {
+      error = e.toString().replaceFirst('Exception: ', '');
+    }
+    if (mounted) setState(() => loading = false);
+  }
+
+  Future<void> _save() async {
+    setState(() {
+      saving = true;
+      error = null;
+    });
+    try {
+      final body = <String, dynamic>{};
+      for (final spec in specs) {
+        if (spec.$1 != 'mobile') body[spec.$1] = fields[spec.$1]!.text.trim();
+      }
+      await ApiClient().put('/api/users/me', body);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Details saved successfully.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => error = e.toString().replaceFirst('Exception: ', ''));
+      }
+    }
+    if (mounted) setState(() => saving = false);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(padding: const EdgeInsets.all(20), children: [
+              for (final spec in specs)
+                Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: TextField(
+                        controller: fields[spec.$1],
+                        readOnly: spec.$1 == 'mobile',
+                        keyboardType:
+                            spec.$1 == 'pincode' ? TextInputType.number : null,
+                        decoration: InputDecoration(
+                            labelText: spec.$2,
+                            prefixIcon: Icon(spec.$3),
+                            helperText: spec.$1 == 'mobile'
+                                ? 'Mobile number cannot be changed here'
+                                : null))),
+              if (error != null)
+                Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(error!,
+                        style: const TextStyle(color: Colors.redAccent))),
+              FilledButton(
+                  onPressed: saving ? null : _save,
+                  style: FilledButton.styleFrom(
+                      backgroundColor: gold, foregroundColor: ink),
+                  child: Text(saving ? 'Saving…' : 'Save changes',
+                      style: const TextStyle(fontWeight: FontWeight.w900)))
+            ]));
+}
+
+class InviteFriendsPage extends StatelessWidget {
+  const InviteFriendsPage({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(title: const Text('Invite friends')),
+      body: FutureBuilder<Map<String, dynamic>>(
+          future: ApiClient().get('/api/referrals'),
+          builder: (_, s) {
+            if (s.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final data = s.data?['data'] as Map<String, dynamic>? ?? {};
+            final code = '${data['code'] ?? ''}';
+            return Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(children: [
+                  const Icon(Icons.group_add_rounded, size: 72, color: gold),
+                  const SizedBox(height: 20),
+                  const Text('Invite friends, earn rewards',
+                      style:
+                          TextStyle(fontSize: 23, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 8),
+                  const Text('Share your unique referral code.',
+                      style: TextStyle(color: Colors.white54)),
+                  const SizedBox(height: 26),
+                  Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: .05),
+                          borderRadius: BorderRadius.circular(18)),
+                      child: Column(children: [
+                        const Text('YOUR CODE',
+                            style: TextStyle(
+                                color: Colors.white54, letterSpacing: 1.5)),
+                        const SizedBox(height: 8),
+                        Text(code,
+                            style: const TextStyle(
+                                fontSize: 28,
+                                color: gold,
+                                fontWeight: FontWeight.w900))
+                      ])),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                          onPressed: () async {
+                            await Clipboard.setData(ClipboardData(text: code));
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text('Referral code copied.')));
+                            }
+                          },
+                          icon: const Icon(Icons.copy_rounded),
+                          label: const Text('Copy referral code'))),
+                  const SizedBox(height: 22),
+                  Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _ReferralStat('${data['total'] ?? 0}', 'Invited'),
+                        _ReferralStat(
+                            '${data['successful'] ?? 0}', 'Successful')
+                      ])
+                ]));
+          }));
+}
+
+class _ReferralStat extends StatelessWidget {
+  const _ReferralStat(this.value, this.label);
+  final String value, label;
+  @override
+  Widget build(BuildContext context) => Column(children: [
+        Text(value,
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+        Text(label, style: const TextStyle(color: Colors.white54))
+      ]);
+}
+
+class TermsPrivacyPage extends StatelessWidget {
+  const TermsPrivacyPage({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(title: const Text('Terms & privacy')),
+      body: FutureBuilder<Map<String, dynamic>>(
+          future: ApiClient().get('/api/app-config'),
+          builder: (_, s) {
+            if (s.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final d = s.data?['data'] as Map<String, dynamic>? ?? {};
+            return ListView(padding: const EdgeInsets.all(20), children: [
+              _LegalBlock('Terms of use',
+                  '${d['terms_text'] ?? 'Terms have not been published yet.'}'),
+              _LegalBlock('Privacy policy',
+                  '${d['privacy_text'] ?? 'Privacy policy has not been published yet.'}'),
+              _LegalBlock('Support',
+                  '${d['support_contact'] ?? 'Contact details have not been published yet.'}')
+            ]);
+          }));
+}
+
+class _LegalBlock extends StatelessWidget {
+  const _LegalBlock(this.title, this.text);
+  final String title, text;
+  @override
+  Widget build(BuildContext context) => Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: .05),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.white10)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 10),
+        Text(text, style: const TextStyle(color: Colors.white70, height: 1.5))
+      ]));
 }
 
 class WinnersPage extends StatefulWidget {
