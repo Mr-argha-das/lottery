@@ -19,6 +19,10 @@ def create(db:Session,user_id:str,lottery_id:str,key:str):
 def deep_link(db:Session,p:Payment):
     s=get_settings(); upi=db.get(AppSetting,"upi_payee_id"); name=db.get(AppSetting,"upi_payee_name")
     q=urlencode({"pa":upi.value if upi else s.upi_payee_id,"pn":name.value if name else s.upi_payee_name,"am":str(p.amount),"cu":"INR","tr":p.id,"tn":"Lottery entry"}); return f"upi://pay?{q}"
+def wallet_topup_link(db:Session):
+    s=get_settings(); upi=db.get(AppSetting,"upi_payee_id"); name=db.get(AppSetting,"upi_payee_name")
+    q=urlencode({"pa":upi.value if upi else s.upi_payee_id,"pn":name.value if name else s.upi_payee_name,"cu":"INR","tn":"Wallet top-up"})
+    return f"upi://pay?{q}"
 def verify_webhook(db:Session,payment_id:str,reference:str,status:str,signature:str):
     s=get_settings(); raw=f"{payment_id}|{reference}|{status}"; expected=hmac.new(s.webhook_secret.encode(),raw.encode(),hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature,expected): raise PermissionError("Invalid signature")

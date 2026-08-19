@@ -51,6 +51,7 @@ def wallet_tx(user=Depends(current_user),db:Session=Depends(get_db)): return {"s
 def app_config(user=Depends(current_user),db:Session=Depends(get_db)):
     keys=("wallet_topup_deep_link","terms_text","privacy_text","support_contact")
     values={key:(db.get(AppSetting,key).value if db.get(AppSetting,key) else "") for key in keys}
+    values["wallet_topup_deep_link"]=payment_service.wallet_topup_link(db)
     return {"success":True,"data":values}
 @router.get("/referrals")
 def referrals(user=Depends(current_user),db:Session=Depends(get_db)):
