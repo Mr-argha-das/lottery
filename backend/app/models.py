@@ -58,6 +58,16 @@ class Wallet(Base):
 class WalletTransaction(Base):
     __tablename__="wallet_transactions"; id: Mapped[str]=mapped_column(String, primary_key=True, default=uid); user_id: Mapped[str]=mapped_column(ForeignKey("users.id"), index=True); amount: Mapped[float]=mapped_column(Numeric(12,2)); type: Mapped[str]=mapped_column(String); description: Mapped[str]=mapped_column(String); reference_id: Mapped[str]=mapped_column(String); balance_before: Mapped[float]=mapped_column(Numeric(12,2)); balance_after: Mapped[float]=mapped_column(Numeric(12,2)); created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True), default=now)
 
+class WithdrawalRequest(Base):
+    __tablename__="withdrawal_requests"
+    id: Mapped[str]=mapped_column(String, primary_key=True, default=uid)
+    user_id: Mapped[str]=mapped_column(ForeignKey("users.id"), index=True)
+    amount: Mapped[float]=mapped_column(Numeric(12,2))
+    upi_id: Mapped[str]=mapped_column(String(100))
+    status: Mapped[str]=mapped_column(String, default="PENDING", index=True)
+    created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True), default=now)
+    processed_at: Mapped[datetime|None]=mapped_column(DateTime(timezone=True), nullable=True)
+
 class Referral(Base):
     __tablename__="referrals"; __table_args__=(UniqueConstraint("referred_id"),)
     id: Mapped[str]=mapped_column(String, primary_key=True, default=uid); referrer_id: Mapped[str]=mapped_column(ForeignKey("users.id")); referred_id: Mapped[str]=mapped_column(ForeignKey("users.id")); rewarded: Mapped[bool]=mapped_column(Boolean, default=False); created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True), default=now)

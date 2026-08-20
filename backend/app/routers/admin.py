@@ -9,6 +9,19 @@ from ..services.draw_service import execute
 
 router=APIRouter(prefix="/api/admin",tags=["Admin"])
 def obj(x): return {c.name:getattr(x,c.name) for c in x.__table__.columns}
+def sync_prizes(db:Session,lottery:Lottery,prizes):
+    if not prizes: return
+    if {p.position for p in prizes}!={1,2,3}: raise HTTPException(422,"Configure exactly 1st, 2nd and 3rd prizes")
+    for item in prizes:
+        if item.prize_type not in {"CASH","PHYSICAL"}: raise HTTPException(422,"Prize type must be CASH or PHYSICAL")
+        if item.prize_type=="CASH" and item.amount is None: raise HTTPException(422,f"Cash amount is required for position {item.position}")
+        link=db.scalar(select(LotteryPrize).where(LotteryPrize.lottery_id==lottery.id,LotteryPrize.position==item.position))
+        prize=db.get(Prize,link.prize_id) if link else None
+        if not prize:
+            prize=Prize(title=item.title); db.add(prize); db.flush(); db.add(LotteryPrize(lottery_id=lottery.id,prize_id=prize.id,position=item.position))
+        prize.title=item.title; prize.description=f"Position {item.position} prize"; prize.prize_type=item.prize_type; prize.amount=item.amount if item.prize_type=="CASH" else None
+def lottery_obj(db:Session,x:Lottery):
+    data=obj(x); rows=db.execute(select(LotteryPrize,Prize).join(Prize,LotteryPrize.prize_id==Prize.id).where(LotteryPrize.lottery_id==x.id).order_by(LotteryPrize.position)).all(); data["prizes"]=[{**obj(p),"position":link.position} for link,p in rows]; return data
 @router.post("/login")
 def login(body:AdminLogin,db:Session=Depends(get_db)):
     a=db.scalar(select(AdminUser).where(AdminUser.email==body.email))
@@ -21,16 +34,18 @@ def overview(admin=Depends(current_admin),db:Session=Depends(get_db)):
 @router.post("/lotteries",status_code=201)
 def create_lottery(body:LotteryCreate,admin=Depends(elevated_admin),db:Session=Depends(get_db)):
     if not(body.start_at<body.join_deadline<body.result_at): raise HTTPException(422,"Dates must be chronological")
-    x=Lottery(**body.model_dump()); db.add(x); db.flush(); db.add(AuditLog(admin_id=admin.id,action="CREATE",entity="lottery",entity_id=x.id,new_value=x.name)); db.commit(); return {"success":True,"data":obj(x)}
+    x=Lottery(**body.model_dump(exclude={"prizes"})); db.add(x); db.flush(); sync_prizes(db,x,body.prizes); db.add(AuditLog(admin_id=admin.id,action="CREATE",entity="lottery",entity_id=x.id,new_value=x.name)); db.commit(); return {"success":True,"data":lottery_obj(db,x)}
 @router.put("/lotteries/{lottery_id}")
 def update_lottery(lottery_id:str,body:LotteryUpdate,admin=Depends(elevated_admin),db:Session=Depends(get_db)):
     x=db.get(Lottery,lottery_id)
     if not x: raise HTTPException(404,"Lottery not found")
     if x.status=="COMPLETED": raise HTTPException(409,"Completed lottery cannot be edited")
     old=obj(x)
-    for key,value in body.model_dump(exclude_unset=True).items(): setattr(x,key,value)
+    changes=body.model_dump(exclude_unset=True,exclude={"prizes"})
+    for key,value in changes.items(): setattr(x,key,value)
+    if body.prizes is not None: sync_prizes(db,x,body.prizes)
     if not(x.start_at<x.join_deadline<x.result_at): raise HTTPException(422,"Dates must be chronological")
-    db.add(AuditLog(admin_id=admin.id,action="UPDATE",entity="lottery",entity_id=x.id,old_value=str(old),new_value=str(body.model_dump(exclude_unset=True)))); db.commit(); return {"success":True,"data":obj(x)}
+    db.add(AuditLog(admin_id=admin.id,action="UPDATE",entity="lottery",entity_id=x.id,old_value=str(old),new_value=str(body.model_dump(exclude_unset=True)))); db.commit(); return {"success":True,"data":lottery_obj(db,x)}
 @router.delete("/lotteries/{lottery_id}")
 def delete_lottery(lottery_id:str,admin=Depends(elevated_admin),db:Session=Depends(get_db)):
     x=db.get(Lottery,lottery_id)
@@ -51,13 +66,15 @@ def draw(lottery_id:str,request:Request,admin=Depends(elevated_admin),db:Session
 @router.get("/users")
 def users(admin=Depends(current_admin),db:Session=Depends(get_db)): return {"success":True,"data":[{k:v for k,v in obj(x).items() if k!="password_hash"} for x in db.scalars(select(User).order_by(User.created_at.desc()))]}
 @router.get("/lotteries")
-def lotteries(admin=Depends(current_admin),db:Session=Depends(get_db)): return {"success":True,"data":[obj(x) for x in db.scalars(select(Lottery).order_by(Lottery.created_at.desc()))]}
+def lotteries(admin=Depends(current_admin),db:Session=Depends(get_db)): return {"success":True,"data":[lottery_obj(db,x) for x in db.scalars(select(Lottery).order_by(Lottery.created_at.desc()))]}
 @router.get("/tickets")
 def tickets(admin=Depends(current_admin),db:Session=Depends(get_db)): return {"success":True,"data":[obj(x) for x in db.scalars(select(Ticket).order_by(Ticket.created_at.desc()))]}
 @router.get("/payments")
 def payments(admin=Depends(current_admin),db:Session=Depends(get_db)): return {"success":True,"data":[obj(x) for x in db.scalars(select(Payment).order_by(Payment.created_at.desc()))]}
 @router.get("/wallet-transactions")
 def wallet_transactions(admin=Depends(current_admin),db:Session=Depends(get_db)): return {"success":True,"data":[obj(x) for x in db.scalars(select(WalletTransaction).order_by(WalletTransaction.created_at.desc()))]}
+@router.get("/withdrawals")
+def withdrawals(admin=Depends(current_admin),db:Session=Depends(get_db)): return {"success":True,"data":[obj(x) for x in db.scalars(select(WithdrawalRequest).order_by(WithdrawalRequest.created_at.desc()))]}
 @router.get("/referrals")
 def referrals(admin=Depends(current_admin),db:Session=Depends(get_db)): return {"success":True,"data":[obj(x) for x in db.scalars(select(Referral).order_by(Referral.created_at.desc()))]}
 @router.get("/winners")

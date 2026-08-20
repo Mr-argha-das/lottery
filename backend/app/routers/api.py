@@ -4,12 +4,14 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import *
-from ..schemas import ProfileUpdate, PaymentCreate, Webhook
+from ..schemas import ProfileUpdate, PaymentCreate, Webhook, WithdrawalCreate
 from ..security import current_user
 from ..services import payment_service
 
 router=APIRouter(prefix="/api")
 def obj(x): return {c.name:getattr(x,c.name) for c in x.__table__.columns}
+def lottery_data(db:Session,x:Lottery):
+    data=obj(x); rows=db.execute(select(LotteryPrize,Prize).join(Prize,LotteryPrize.prize_id==Prize.id).where(LotteryPrize.lottery_id==x.id).order_by(LotteryPrize.position)).all(); data["prizes"]=[{**obj(p),"position":link.position} for link,p in rows]; return data
 @router.get("/users/me")
 def me(user=Depends(current_user),db:Session=Depends(get_db)):
     data=obj(user); data.pop("password_hash"); data["wallet"]=obj(db.get(Wallet,user.id)); return {"success":True,"data":data}
@@ -19,12 +21,12 @@ def update(body:ProfileUpdate,user=Depends(current_user),db:Session=Depends(get_
     db.commit(); return {"success":True,"data":obj(user)}
 @router.get("/lotteries")
 def lotteries(db:Session=Depends(get_db)):
-    rows=db.scalars(select(Lottery).where(Lottery.status.in_(["ACTIVE","SCHEDULED"])).order_by(Lottery.result_at)).all(); return {"success":True,"data":[obj(x) for x in rows]}
+    rows=db.scalars(select(Lottery).where(Lottery.status.in_(["ACTIVE","SCHEDULED"])).order_by(Lottery.result_at)).all(); return {"success":True,"data":[lottery_data(db,x) for x in rows]}
 @router.get("/lotteries/{lottery_id}")
 def lottery(lottery_id:str,db:Session=Depends(get_db)):
     x=db.get(Lottery,lottery_id)
     if not x: raise HTTPException(404,"Lottery not found")
-    d=obj(x); d["ticket_count"]=db.scalar(select(func.count()).select_from(Ticket).where(Ticket.lottery_id==x.id)); d["prizes"]=[obj(p) for p in db.scalars(select(Prize).join(LotteryPrize,Prize.id==LotteryPrize.prize_id).where(LotteryPrize.lottery_id==x.id).order_by(LotteryPrize.position))]; return {"success":True,"data":d}
+    d=lottery_data(db,x); d["ticket_count"]=db.scalar(select(func.count()).select_from(Ticket).where(Ticket.lottery_id==x.id)); return {"success":True,"data":d}
 @router.post("/payments/create",status_code=201)
 def payment_create(body:PaymentCreate,user=Depends(current_user),db:Session=Depends(get_db)):
     try: p=payment_service.create(db,user.id,body.lottery_id,body.idempotency_key)
@@ -47,6 +49,20 @@ def tickets(user=Depends(current_user),db:Session=Depends(get_db)): return {"suc
 def wallet(user=Depends(current_user),db:Session=Depends(get_db)): return {"success":True,"data":obj(db.get(Wallet,user.id))}
 @router.get("/wallet/transactions")
 def wallet_tx(user=Depends(current_user),db:Session=Depends(get_db)): return {"success":True,"data":[obj(x) for x in db.scalars(select(WalletTransaction).where(WalletTransaction.user_id==user.id).order_by(WalletTransaction.created_at.desc()))]}
+@router.get("/withdrawals")
+def withdrawals(user=Depends(current_user),db:Session=Depends(get_db)):
+    return {"success":True,"data":[obj(x) for x in db.scalars(select(WithdrawalRequest).where(WithdrawalRequest.user_id==user.id).order_by(WithdrawalRequest.created_at.desc()))]}
+@router.post("/withdrawals",status_code=201)
+def create_withdrawal(body:WithdrawalCreate,user=Depends(current_user),db:Session=Depends(get_db)):
+    if not user.upi_id: raise HTTPException(409,"Add your UPI ID in Profile before withdrawing")
+    wallet=db.scalar(select(Wallet).where(Wallet.user_id==user.id).with_for_update())
+    if not wallet: raise HTTPException(409,"Wallet not found")
+    before=float(wallet.available_balance or 0); withdrawable=max(0,before-100)
+    if body.amount>withdrawable: raise HTTPException(409,f"Maximum withdrawable amount is ₹{withdrawable:.2f}; ₹100 must remain in wallet")
+    wallet.available_balance=before-body.amount
+    request=WithdrawalRequest(user_id=user.id,amount=body.amount,upi_id=user.upi_id); db.add(request); db.flush()
+    db.add_all([WalletTransaction(user_id=user.id,amount=-body.amount,type="WITHDRAWAL_REQUEST",description=f"Withdrawal requested to {user.upi_id}",reference_id=request.id,balance_before=before,balance_after=wallet.available_balance),Notification(user_id=user.id,title="Withdrawal requested",body=f"Your ₹{body.amount:,.2f} withdrawal request is pending.")]); db.commit(); db.refresh(request)
+    return {"success":True,"message":"Withdrawal request submitted","data":obj(request)}
 @router.get("/app-config")
 def app_config(user=Depends(current_user),db:Session=Depends(get_db)):
     keys=("wallet_topup_deep_link","terms_text","privacy_text","support_contact")

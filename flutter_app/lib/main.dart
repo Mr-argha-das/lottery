@@ -15,9 +15,10 @@ const defaultWalletTopUpLink =
 
 class ApiClient {
   ApiClient({String? base})
-      : base = base ??
-            const String.fromEnvironment('API_BASE_URL',
-                defaultValue: 'https://overhaul-oaf-silk.ngrok-free.dev');
+      : base = (base ??
+                const String.fromEnvironment('API_BASE_URL',
+                    defaultValue: 'https://overhaul-oaf-silk.ngrok-free.dev'))
+            .replaceFirst(RegExp(r'/+$'), '');
   final String base;
   final storage = const FlutterSecureStorage();
   Future<Map<String, dynamic>> get(String path) async {
@@ -32,8 +33,13 @@ class ApiClient {
 
   Future<Map<String, dynamic>> post(
       String path, Map<String, dynamic> body) async {
+    final t = await storage.read(key: 'access');
     final r = await http.post(Uri.parse('$base$path'),
-        headers: {'Content-Type': 'application/json'}, body: jsonEncode(body));
+        headers: {
+          'Content-Type': 'application/json',
+          if (t != null) 'Authorization': 'Bearer $t'
+        },
+        body: jsonEncode(body));
     final data = jsonDecode(r.body) as Map<String, dynamic>;
     if (r.statusCode >= 400) {
       throw Exception(data['detail'] ?? 'Request failed');
@@ -60,8 +66,9 @@ class ApiClient {
 
 class Lottery {
   Lottery(this.title, this.description, this.price, this.prize, this.deadline,
-      this.image);
+      this.image, this.prizes);
   final String title, description, prize, image;
+  final List<String> prizes;
   final int price;
   final DateTime deadline;
   factory Lottery.fromJson(Map<String, dynamic> x) => Lottery(
@@ -70,7 +77,10 @@ class Lottery {
       (x['entry_price'] as num).round(),
       'First Prize',
       DateTime.parse(x['join_deadline']),
-      x['banner_url'] ?? 'https://picsum.photos/seed/lottery/1200/700');
+      x['banner_url'] ?? 'https://picsum.photos/seed/lottery/1200/700',
+      ((x['prizes'] as List?) ?? [])
+          .map((p) => (p as Map<String, dynamic>)['title']?.toString() ?? '')
+          .toList());
 }
 
 final samples = [
@@ -80,14 +90,16 @@ final samples = [
       100,
       'Royal Enfield',
       DateTime(2026, 8, 20, 20),
-      'https://images.unsplash.com/photo-1558981806-ec527fa84c39?w=1200'),
+      'https://images.unsplash.com/photo-1558981806-ec527fa84c39?w=1200',
+      ['Royal Enfield Bike', '₹25,000 Cash', '₹10,000 Cash']),
   Lottery(
       'Mega Car Lottery',
       'Your dream drive is one ticket away',
       500,
       'Premium Car',
       DateTime(2026, 8, 28, 20),
-      'https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=1200')
+      'https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=1200',
+      ['Premium Car', '₹50,000 Cash', '₹20,000 Cash'])
 ];
 
 class DhanLaxmiApp extends StatelessWidget {
@@ -236,21 +248,14 @@ class _AuthPageState extends State<AuthPage> {
                                       CrossAxisAlignment.stretch,
                                   children: [
                                     Center(
-                                        child: Container(
-                                            width: 64,
-                                            height: 64,
-                                            decoration: BoxDecoration(
-                                                gradient: const LinearGradient(
-                                                    colors: [
-                                                      gold,
-                                                      Color(0xFFFFB74D)
-                                                    ]),
-                                                borderRadius:
-                                                    BorderRadius.circular(20)),
-                                            child: const Icon(
-                                                Icons.auto_awesome,
-                                                color: ink,
-                                                size: 31))),
+                                        child: ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(20),
+                                            child: Image.asset(
+                                                'assets/dhanlaxmi_logo.png',
+                                                width: 76,
+                                                height: 76,
+                                                fit: BoxFit.cover))),
                                     const SizedBox(height: 20),
                                     Text(
                                         register
@@ -660,13 +665,10 @@ class LotteryCard extends StatelessWidget {
 class _BrandMark extends StatelessWidget {
   const _BrandMark();
   @override
-  Widget build(BuildContext context) => Container(
-      width: 42,
-      height: 42,
-      decoration: BoxDecoration(
-          gradient: const LinearGradient(colors: [gold, Color(0xFFFFA94D)]),
-          borderRadius: BorderRadius.circular(13)),
-      child: const Icon(Icons.auto_awesome, color: ink, size: 22));
+  Widget build(BuildContext context) => ClipRRect(
+      borderRadius: BorderRadius.circular(13),
+      child: Image.asset('assets/dhanlaxmi_logo.png',
+          width: 42, height: 42, fit: BoxFit.cover));
 }
 
 class _QuickStat extends StatelessWidget {
@@ -715,7 +717,7 @@ class Details extends StatelessWidget {
               Text(lottery.description,
                   style: const TextStyle(color: Colors.white60, fontSize: 16)),
               const SizedBox(height: 24),
-              const PrizeRow(),
+              PrizeRow(prizes: lottery.prizes),
               const SizedBox(height: 28),
               const Text('How it works',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
@@ -758,10 +760,15 @@ class Details extends StatelessWidget {
 }
 
 class PrizeRow extends StatelessWidget {
-  const PrizeRow({super.key});
+  const PrizeRow({super.key, required this.prizes});
+  final List<String> prizes;
   @override
   Widget build(BuildContext c) => Row(children: [
-        for (final x in [('1st', 'Bike'), ('2nd', '₹25K'), ('3rd', '₹10K')])
+        for (final x in [
+          ('1st', prizes.isNotEmpty ? prizes[0] : 'First prize'),
+          ('2nd', prizes.length > 1 ? prizes[1] : 'Second prize'),
+          ('3rd', prizes.length > 2 ? prizes[2] : 'Third prize')
+        ])
           Expanded(
               child: Container(
                   margin: const EdgeInsets.only(right: 8),
@@ -774,7 +781,11 @@ class PrizeRow extends StatelessWidget {
                         style: const TextStyle(color: gold, fontSize: 12)),
                     const SizedBox(height: 6),
                     Text(x.$2,
-                        style: const TextStyle(fontWeight: FontWeight.w800))
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w800))
                   ])))
       ]);
 }
@@ -1119,6 +1130,30 @@ class _WalletPageState extends State<WalletPage> {
                                     label: const Text('Top up wallet',
                                         style: TextStyle(
                                             fontWeight: FontWeight.w900)))),
+                            const SizedBox(height: 10),
+                            SizedBox(
+                                width: double.infinity,
+                                child: OutlinedButton.icon(
+                                    onPressed: () async {
+                                      await Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                              builder: (_) =>
+                                                  const WithdrawalPage()));
+                                      if (mounted) {
+                                        setState(() => future = _load());
+                                      }
+                                    },
+                                    style: OutlinedButton.styleFrom(
+                                        foregroundColor: Colors.white,
+                                        side: const BorderSide(
+                                            color: Colors.white24),
+                                        minimumSize: const Size(0, 52)),
+                                    icon: const Icon(
+                                        Icons.account_balance_outlined),
+                                    label: const Text('Withdraw winnings',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.w800)))),
                             const SizedBox(height: 16),
                             const Text(
                                 'Referral credits can only be used under applicable lottery rules.',
@@ -1154,6 +1189,157 @@ class _WalletPageState extends State<WalletPage> {
                             style:
                                 const TextStyle(fontWeight: FontWeight.w800))))
                 ]));
+          }));
+}
+
+class WithdrawalPage extends StatefulWidget {
+  const WithdrawalPage({super.key});
+  @override
+  State<WithdrawalPage> createState() => _WithdrawalPageState();
+}
+
+class _WithdrawalPageState extends State<WithdrawalPage> {
+  late Future<List<Map<String, dynamic>>> future;
+  final amount = TextEditingController();
+  bool submitting = false;
+  String? message;
+
+  @override
+  void initState() {
+    super.initState();
+    future = _load();
+  }
+
+  Future<List<Map<String, dynamic>>> _load() async {
+    final api = ApiClient();
+    return [
+      await api.get('/api/wallet'),
+      await api.get('/api/users/me'),
+      await api.get('/api/withdrawals')
+    ];
+  }
+
+  Future<void> _withdraw(double maximum) async {
+    final value = double.tryParse(amount.text.trim()) ?? 0;
+    if (value <= 0 || value > maximum) {
+      setState(() => message =
+          'Enter an amount up to ₹${maximum.toStringAsFixed(0)}. ₹100 must remain in your wallet.');
+      return;
+    }
+    setState(() {
+      submitting = true;
+      message = null;
+    });
+    try {
+      await ApiClient().post('/api/withdrawals', {'amount': value});
+      amount.clear();
+      setState(() {
+        message = 'Withdrawal request submitted successfully.';
+        future = _load();
+      });
+    } catch (e) {
+      setState(() => message = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(title: const Text('Withdraw winnings')),
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+          future: future,
+          builder: (_, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return EmptyPage(
+                  icon: Icons.cloud_off_outlined,
+                  title: 'Unable to load wallet',
+                  text: snapshot.error.toString());
+            }
+            final wallet = snapshot.data![0]['data'] as Map<String, dynamic>;
+            final user = snapshot.data![1]['data'] as Map<String, dynamic>;
+            final rows = snapshot.data![2]['data'] as List;
+            final balance =
+                (wallet['available_balance'] as num?)?.toDouble() ?? 0;
+            final maximum = balance > 100 ? balance - 100 : 0.0;
+            final upi = user['upi_id']?.toString() ?? '';
+            return ListView(padding: const EdgeInsets.all(20), children: [
+              Container(
+                  padding: const EdgeInsets.all(22),
+                  decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                          colors: [Color(0xFF5D3DB7), Color(0xFF29204E)]),
+                      borderRadius: BorderRadius.circular(22)),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('AVAILABLE TO WITHDRAW',
+                            style: TextStyle(
+                                color: Colors.white60,
+                                fontSize: 11,
+                                letterSpacing: 1.3)),
+                        const SizedBox(height: 8),
+                        Text('₹${maximum.toStringAsFixed(0)}',
+                            style: const TextStyle(
+                                fontSize: 38, fontWeight: FontWeight.w900)),
+                        const SizedBox(height: 7),
+                        Text(
+                            'Wallet balance ₹${balance.toStringAsFixed(0)} • ₹100 reserve',
+                            style: const TextStyle(color: Colors.white60))
+                      ])),
+              const SizedBox(height: 20),
+              if (upi.isEmpty)
+                Card(
+                    child: ListTile(
+                        leading: const Icon(Icons.warning_amber_rounded,
+                            color: gold),
+                        title: const Text('UPI ID required'),
+                        subtitle: const Text(
+                            'Profile → UPI & payment mein apni UPI ID add karein.')))
+              else ...[
+                TextField(
+                    controller: amount,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                        labelText: 'Withdrawal amount',
+                        prefixText: '₹ ',
+                        helperText: 'Payment will be requested to $upi')),
+                const SizedBox(height: 12),
+                FilledButton(
+                    onPressed: submitting || maximum <= 0
+                        ? null
+                        : () => _withdraw(maximum),
+                    child: Text(
+                        submitting ? 'Submitting…' : 'Request withdrawal')),
+              ],
+              if (message != null)
+                Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    child: Text(message!, style: const TextStyle(color: gold))),
+              const SizedBox(height: 24),
+              const Text('Withdrawal history',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 10),
+              if (rows.isEmpty)
+                const Text('No withdrawal requests yet.',
+                    style: TextStyle(color: Colors.white38))
+              else
+                ...rows.map((x) => Card(
+                    child: ListTile(
+                        leading:
+                            const Icon(Icons.south_east_rounded, color: gold),
+                        title: Text('₹${x['amount']}'),
+                        subtitle: Text(x['upi_id'] ?? ''),
+                        trailing: Text(x['status'] ?? 'PENDING',
+                            style: const TextStyle(
+                                color: gold,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800)))))
+            ]);
           }));
 }
 

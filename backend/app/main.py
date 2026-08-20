@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from .config import get_settings
@@ -20,6 +20,10 @@ async def headers(request:Request,call_next):
 async def unexpected(_,exc): return JSONResponse(status_code=500,content={"success":False,"message":"Internal server error","error_code":"INTERNAL_ERROR"})
 @app.get("/health")
 def health(): return {"status":"ok","environment":s.app_env}
+@app.get("/",include_in_schema=False)
+def landing(request:Request): return templates.TemplateResponse(request,"landing.html")
+@app.get("/download/android",include_in_schema=False)
+def download_android():
+    return FileResponse("backend/app/downloads/DhanLaxmi.apk",media_type="application/vnd.android.package-archive",filename="DhanLaxmi.apk")
 @app.get("/admin",include_in_schema=False)
 def dashboard(request:Request): return templates.TemplateResponse(request,"index.html")
-
