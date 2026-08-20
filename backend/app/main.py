@@ -25,5 +25,8 @@ def landing(request:Request): return templates.TemplateResponse(request,"landing
 @app.get("/download/android",include_in_schema=False)
 def download_android():
     return FileResponse("backend/app/downloads/DhanLaxmi.apk",media_type="application/vnd.android.package-archive",filename="DhanLaxmi.apk")
+@app.get("/download/android-32",include_in_schema=False)
+def download_android_32():
+    return FileResponse("backend/app/downloads/DhanLaxmi-32bit.apk",media_type="application/vnd.android.package-archive",filename="DhanLaxmi-32bit.apk")
 @app.get("/admin",include_in_schema=False)
 def dashboard(request:Request): return templates.TemplateResponse(request,"index.html")
